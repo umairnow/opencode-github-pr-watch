@@ -20,7 +20,8 @@ import { Plugin } from "@opencode/plugin";
 import { botAdvicePrompt, countRun, failureExpired, seenFailures, diagnosisPrompt, parseBotAdvice, parseDiagnosis, refreshHistory } from "./core/advice";
 import { limitFromDurations, parseStallVerdict, stallPrompt } from "./core/timing";
 import { environmentsPrompt, matchWorkflow, parseEnvironments, parseRole, rolePrompt, type WorkflowRole } from "./core/workflow-role";
-import { configureGh, githubPaused, myMergedPrs, myOpenPrs, setGithubDebug, workflowSummary, type EnvironmentGuess, type RoleLookup, currentBranchPrUrl, failureExcerpt, runFailureExcerpt, runSnapshot, viewRun, runningPipelines, runProgress, workflowDurations, parsePrReference, prForRun, prSnapshot, resolveRepo, runGh, quickSnapshot, runGhFirst, type ReadPr, useCallCache } from "./core/github";
+import { configureGh, githubPaused, myMergedPrs, myOpenPrs, setGithubDebug, workflowSummary, type EnvironmentGuess, type RoleLookup, currentBranchPrUrl, failureExcerpt, runFailureExcerpt, runSnapshot, viewRun, runningPipelines, runProgress, workflowDurations, parsePrReference, prForRun, prSnapshot, resolveRepo, runGh, quickSnapshot, runGhFirst, type ReadPr, useCallCache, reviewRequests, submitReview, orgRepos } from "./core/github";
+import { repoName, type ReviewEvent, type ReviewRequest } from "./core/review-requests";
 import { findBranchUpdates, findPrMerges, findRunReruns , alreadyUpToDate , findBotRefreshes, commandDirectory, findGitPushes, findPrCreates, prUrlsIn } from "./core/merge-detection";
 import { formatWatch } from "./core/listing";
 import { beginCheck, claimOrphan, claimPolling, endCheck, dropMessagesFor, handToOwner, onCheckNow, ownsPolling, processState, releasePolling, requestChecks, resumeChanged, shouldAnnounceResume } from "./core/runtime";
@@ -454,6 +455,7 @@ export default Plugin.define({
       set: (modelKey: string, topics: readonly Topic[]) => ctx.storage.set(`topics/${modelKey}`, topics as never),
     };
     const searches = new Map<string, { at: number; prs: Promise<MyPr[]> }>();
+    let reviewSearch: { at: number; key: string; prs: Promise<ReviewRequest[]> } | undefined;
     const cachedSearch = (key: string, search: () => Promise<MyPr[]>) => {
       const cached = searches.get(key);
       if (cached && Date.now() - cached.at < 60_000) return cached.prs;
@@ -492,6 +494,37 @@ export default Plugin.define({
         const checking = requestChecks(shared, Date.now());
         debug("check-now", { checking });
         return { checking };
+      },
+      // Kept a minute like the other searches: every open panel asks.
+      reviewRequests: async (input) => {
+        const favourites = ((input as { favourites?: string[] }).favourites ?? []).filter((repo) => repoName(repo) === repo);
+        const me = await ghUser();
+        const key = favourites.join(",");
+        if (!reviewSearch || reviewSearch.key !== key || Date.now() - reviewSearch.at >= 60_000) {
+          const prs = reviewRequests(runGh, me, directory, favourites);
+          reviewSearch = { at: Date.now(), key, prs };
+          // A failed search isn't kept: the next ask tries again.
+          prs.catch(() => (reviewSearch = undefined));
+        }
+        return { prs: await reviewSearch.prs };
+      },
+      // Repos change rarely: each organisation's list is kept an hour.
+      orgRepos: async (input) => {
+        const { orgs } = input as { orgs: string[] };
+        const lists = await Promise.all(
+          orgs.filter((org) => /^[A-Za-z0-9-]+$/.test(org)).map((org) => shared.callCache.get(`org-repos:${org}`, 60 * 60_000, () => orgRepos(runGh, org, directory))),
+        );
+        return { repos: lists.flat() };
+      },
+      // Only ever from the user's click in the review dialog; no tool exposes it, so the agent can't approve.
+      submitReview: async (input) => {
+        const review = input as { repo: string; number: number; event: ReviewEvent; body: string; sha: string };
+        debug("review-submitting", { id: `${review.repo}#${review.number}`, event: review.event, sha: review.sha });
+        const message = await submitReview(runGh, review, directory);
+        debug("review-submitted", { id: `${review.repo}#${review.number}`, event: review.event, sha: review.sha });
+        // The PR leaves the list once reviewed: read it again next time.
+        reviewSearch = undefined;
+        return { message };
       },
       // Every session's watches, with the session watching each: the one store the pill and the PRs tab both read.
       watches: async () => {

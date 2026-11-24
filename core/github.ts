@@ -12,6 +12,7 @@ import { deployPossible, startsOnMerge, startsOnPullRequest, workflowEnvironment
 import { checkName, factsFrom, isDeployJob, latestAttempts, pipelineChecks, summaryLine, type CheckView, type JobView, type PrFacts, type PrView, type RunWithJobs } from "./pr-facts";
 import { noDebugLog, tolerate, type DebugLog } from "./debug-log";
 import { COMMENTS_QUERY, parseComments, type CommentRead } from "./comments";
+import { favouriteSearches, mergeReviews, REQUESTED_SEARCH, REVIEW_SEARCH_QUERY, reviewArgs, reviewRequestsFrom, staleHead, type ReviewEvent, type ReviewRequest } from "./review-requests";
 import { afterSuccess, budgetOf, classifyGhError, healthAfter, pausedText } from "./github-health";
 import { processState, sharedMap } from "./runtime";
 import { myPrFrom, type MyPr, type SearchedPr } from "./my-prs";
@@ -866,4 +867,36 @@ export const useCallCache = (cache: CallCache | undefined) => void (callCache = 
 const SHARED_MS = 0;
 function cached<T>(key: string, ttlMs: number | ((value: T) => number), read: () => Promise<T>): Promise<T> {
   return callCache ? callCache.get(key, ttlMs, read) : read();
+}
+
+const reviewSearch = async (gh: Gh, search: string, cwd: string) =>
+  JSON.parse(await gh(["api", "graphql", "-f", `query=${REVIEW_SEARCH_QUERY}`, "-f", `q=${search}`], cwd));
+
+/** The open PRs whose review is requested from the gh user, and those that need a review in their favourite repos. */
+export async function reviewRequests(gh: Gh, me: string, cwd: string, favourites: readonly string[] = []): Promise<ReviewRequest[]> {
+  const [requested, ...others] = await Promise.all([
+    reviewSearch(gh, REQUESTED_SEARCH, cwd).then((answer) => reviewRequestsFrom(answer, me)),
+    ...favouriteSearches(favourites).map((search) => reviewSearch(gh, search, cwd).then((answer) => reviewRequestsFrom(answer, me, false))),
+  ]);
+  return mergeReviews(requested!, others.flat());
+}
+
+const SUBMITTED: Record<ReviewEvent, string> = { APPROVE: "Approved", COMMENT: "Commented on", REQUEST_CHANGES: "Requested changes on" };
+
+/**
+ * Submits the user's review on the commit they reviewed. Reads the PR's head first and refuses when it moved on, so an
+ * approval never covers commits the user didn't see. Returns what was done.
+ */
+export async function submitReview(gh: Gh, input: { readonly repo: string; readonly number: number; readonly event: ReviewEvent; readonly body: string; readonly sha: string }, cwd: string): Promise<string> {
+  const head = (await gh(["pr", "view", String(input.number), "--repo", input.repo, "--json", "headRefOid", "--jq", ".headRefOid"], cwd)).trim();
+  const stale = staleHead(input.sha, head);
+  if (stale) throw new Error(stale);
+  await gh(reviewArgs(input.repo, input.number, input.event, input.body, input.sha), cwd);
+  return `${SUBMITTED[input.event]} ${input.repo}#${input.number}.`;
+}
+
+/** The organisation's repos that aren't archived, as owner/name. */
+export async function orgRepos(gh: Gh, org: string, cwd: string): Promise<string[]> {
+  const text = await gh(["repo", "list", org, "--no-archived", "--limit", "1000", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner"], cwd);
+  return text.split("\n").map((line) => line.trim()).filter(Boolean);
 }

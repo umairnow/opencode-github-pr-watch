@@ -21,7 +21,7 @@ Requires OpenCode V2 (2.3 or later), the GitHub CLI `gh` logged in to the repos 
 - **What you hear:** every change of step, so silence means nothing changed, and progress within a step as the PR's track (`Checks … 4/5 · Review · Merge · Deploy`), at most once a minute and without waking the agent.
 - **A watch ends** when the PR is done: deployed, merged with no deploy, or closed. Something to fix (checks failed, changes requested) wakes the agent and the watch follows the fix; a review, a run approval or the merge only informs, and waits without a time limit. A watch with no change for 14 days ends.
 
-In the OpenCode desktop app, a pill above the composer shows the session's watches, and a **PRs** tab in the side panel lists your open PRs and all watches, grouped by repo or by topic. See [Desktop](docs/desktop.md).
+In the OpenCode desktop app, a pill above the composer shows the session's watches, and a **PRs** tab in the side panel lists your open PRs and all watches, grouped by repo or by topic, and the PRs waiting for your review, which you can have explained in a new session and then review (comment, approve or request changes) from the panel. See [Desktop](docs/desktop.md).
 
 ![The PRs tab, grouped by topic](docs/images/prs-topics.png)
 

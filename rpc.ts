@@ -57,6 +57,23 @@ const myPr = {
   additionalProperties: false,
 } as const;
 
+const reviewRequest = {
+  type: "object",
+  properties: {
+    repo: { type: "string" },
+    number: { type: "number" },
+    title: { type: "string" },
+    url: { type: "string" },
+    draft: { type: "boolean" },
+    createdAt: { type: "string" },
+    author: { type: "string" },
+    headSha: { type: "string" },
+    requested: { type: "boolean" },
+  },
+  required: ["repo", "number", "title", "url", "draft", "createdAt", "author", "headSha", "requested"],
+  additionalProperties: false,
+} as const;
+
 /** What the desktop and terminal UI parts read from the server part: the session's watches, and when they change. */
 export const PrWatch = Rpc.define({
   id: "pr-watch",
@@ -138,6 +155,32 @@ export const PrWatch = Rpc.define({
     checkNow: {
       input: { type: "object", additionalProperties: false },
       output: { type: "object", properties: { checking: { type: "boolean" } }, required: ["checking"], additionalProperties: false },
+    },
+    // The open PRs waiting for the gh user's review that they can approve.
+    reviewRequests: {
+      input: { type: "object", properties: { favourites: { type: "array", items: { type: "string" } } }, additionalProperties: false },
+      output: { type: "object", properties: { prs: { type: "array", items: reviewRequest } }, required: ["prs"], additionalProperties: false },
+    },
+    // The repos of the given organisations, for picking favourites.
+    orgRepos: {
+      input: { type: "object", properties: { orgs: { type: "array", items: { type: "string" } } }, required: ["orgs"], additionalProperties: false },
+      output: { type: "object", properties: { repos: { type: "array", items: { type: "string" } } }, required: ["repos"], additionalProperties: false },
+    },
+    // Submits the user's review on the commit they reviewed; refused when the PR has new commits.
+    submitReview: {
+      input: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          number: { type: "number" },
+          event: { type: "string", enum: ["COMMENT", "APPROVE", "REQUEST_CHANGES"] },
+          body: { type: "string" },
+          sha: { type: "string" },
+        },
+        required: ["repo", "number", "event", "body", "sha"],
+        additionalProperties: false,
+      },
+      output: { type: "object", properties: { message: { type: "string" } }, required: ["message"], additionalProperties: false },
     },
   },
   events: {

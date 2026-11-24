@@ -81,5 +81,11 @@ export function demoPort(sessionID: () => string, now: () => number): PanelPort 
     prompt: async () => undefined,
     openSession: () => undefined,
     copy: async () => undefined,
+    reviewRequests: async () => [
+      { repo: "acme/api", number: 88, title: "Rate limit the login endpoint", url: "https://github.com/acme/api/pull/88", draft: false, createdAt: new Date(now() - 5 * 3_600_000).toISOString(), author: "colleague", headSha: "4f2a9c1e0b7d", requested: true },
+      { repo: "acme/web", number: 31, title: "Bump the design system", url: "https://github.com/acme/web/pull/31", draft: false, createdAt: new Date(now() - 26 * 3_600_000).toISOString(), author: "renovate", headSha: "9b1d07aa3c2e", requested: false },
+    ],
+    orgRepos: async () => ["acme/api", "acme/infra", "acme/shop", "acme/web"],
+    submitReview: async (input) => `Demo mode: nothing sent for ${input.repo}#${input.number}`,
   };
 }

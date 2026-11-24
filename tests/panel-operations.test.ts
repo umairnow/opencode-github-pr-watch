@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { activities, errorText, panelOperations, type PanelPort } from "../core/panel-operations";
 import type { Change } from "../core/store";
 import type { MyPr } from "../core/my-prs";
+import { explainPrompt, type ReviewRequest } from "../core/review-requests";
 
 const pr = (repo: string, number: number): MyPr => ({ repo, number, title: `Fix ${number}`, url: `https://github.com/${repo}/pull/${number}`, draft: false, createdAt: "2026-11-10T10:00:00Z" });
 
@@ -46,7 +47,21 @@ class FakePort implements PanelPort {
   async prompt(sessionID: string, text: string) { this.fail(`prompt ${sessionID} ${text}`); }
   openSession(server: string, sessionID: string) { this.calls.push(`open ${server} ${sessionID}`); }
   async copy(text: string) { this.fail(`copy ${text}`); }
+  async reviewRequests(favourites: readonly string[]) {
+    this.fail(`reviewRequests ${favourites.join(",")}`);
+    return [request];
+  }
+  async orgRepos(orgs: readonly string[]) {
+    this.fail(`orgRepos ${orgs.join(",")}`);
+    return ["t/a"];
+  }
+  async submitReview(input: { repo: string; number: number; event: string; body: string; sha: string }) {
+    this.fail(`submitReview ${input.repo}#${input.number} ${input.event} at ${input.sha}: ${input.body}`);
+    return `Approved ${input.repo}#${input.number}.`;
+  }
 }
+
+const request: ReviewRequest = { repo: "o/r", number: 7, title: "Add login", url: "https://github.com/o/r/pull/7", draft: false, createdAt: "", author: "colleague", headSha: "abc123", requested: true };
 
 const setup = () => {
   const port = new FakePort();
@@ -146,6 +161,60 @@ describe("check now: the reload button makes every watch check GitHub", () => {
     port.failing = "checkNow";
     expect(await ops.checkNow()).toBe(false);
     expect(log.at(-1)).toBe("Could not ask the watches to check: checkNow broke");
+  });
+});
+
+describe("reviews: explain a PR in its own session, then submit the review", () => {
+  test("loading the PRs waiting for review reports progress", async () => {
+    const { port, log, ops } = setup();
+    expect(await ops.loadReviews(["o/a", "o/b"])).toEqual([request]);
+    expect(port.calls).toEqual(["reviewRequests o/a,o/b"]);
+    expect(log).toEqual(["… Loading the PRs waiting for your review…"]);
+  });
+
+  test("explain: a review session with the open session's model, asked to explain that commit, then opened", async () => {
+    const { port, ops } = setup();
+    expect(await ops.explain(from, request)).toBe(true);
+    expect(port.calls).toEqual([
+      "session ses_1",
+      'createSession Review: o/r#7 Add login in /work with {"providerID":"p","id":"m"} build',
+      `prompt ses_new ${explainPrompt(request)}`,
+      "open local ses_new",
+    ]);
+  });
+
+  test("explaining again after new commits asks about the changes since the explained commit", async () => {
+    const { port, ops } = setup();
+    await ops.explain(from, { ...request, headSha: "new456" }, "abc123");
+    expect(port.calls[2]).toContain("abc123..new456");
+  });
+
+  test("a failed explanation says why and returns false, so the button stays on Explain", async () => {
+    const { port, log, ops } = setup();
+    port.failing = "createSession";
+    expect(await ops.explain(from, request)).toBe(false);
+    expect(log.at(-1)).toBe("Could not start a review session: createSession broke");
+  });
+
+  test("submit: sends the review on the reviewed commit and says what came of it", async () => {
+    const { port, log, ops } = setup();
+    expect(await ops.submitReview(request, "APPROVE", "LGTM")).toBe(true);
+    expect(port.calls).toEqual(["submitReview o/r#7 APPROVE at abc123: LGTM"]);
+    expect(log).toEqual(["… Submitting the review of o/r#7…", "Approved o/r#7."]);
+  });
+
+  test("a review GitHub would refuse is never sent", async () => {
+    const { port, log, ops } = setup();
+    expect(await ops.submitReview(request, "REQUEST_CHANGES", "")).toBe(false);
+    expect(port.calls).toEqual([]);
+    expect(log).toEqual(["A change request needs some text."]);
+  });
+
+  test("a refused review says why", async () => {
+    const { port, log, ops } = setup();
+    port.failing = "submitReview";
+    expect(await ops.submitReview(request, "APPROVE", "")).toBe(false);
+    expect(log.at(-1)).toBe("Could not submit the review of o/r#7: submitReview broke");
   });
 });
 

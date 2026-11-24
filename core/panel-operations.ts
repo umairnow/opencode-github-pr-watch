@@ -1,4 +1,5 @@
 import { prList, prSessionPrompt, type MyPr } from "./my-prs";
+import { explainPrompt, reviewId, reviewProblem, type ReviewEvent, type ReviewRequest } from "./review-requests";
 import type { Topic } from "./topics";
 import type { Change } from "./store";
 import type { WatchRowLike } from "./prs-view";
@@ -21,6 +22,12 @@ export interface PanelPort {
   prompt(sessionID: string, text: string): Promise<void>;
   openSession(server: string, sessionID: string): void;
   copy(text: string): Promise<void>;
+  /** The PRs whose review is requested from the gh user, and those that need a review in the given favourite repos. */
+  reviewRequests(favourites: readonly string[]): Promise<readonly ReviewRequest[]>;
+  /** The repos of the given organisations. */
+  orgRepos(orgs: readonly string[]): Promise<readonly string[]>;
+  /** Submits the review on the given commit; refused when the PR has moved on. Returns what happened. */
+  submitReview(input: { readonly repo: string; readonly number: number; readonly event: ReviewEvent; readonly body: string; readonly sha: string }): Promise<string>;
 }
 
 export interface Feedback {
@@ -121,6 +128,43 @@ export function panelOperations(port: PanelPort, apply: (change: Change) => void
         await port.copy(prList(prs));
         say(`Copied ${prs.length} PR${prs.length === 1 ? "" : "s"} from ${name}.`);
       }, "Could not copy"),
+
+    /** Throws, so the tab can show the error. */
+    loadRepos: (orgs: readonly string[]) => track(`Loading the repos of ${orgs.join(", ")}…`, port.orgRepos(orgs)),
+    /** Throws, so the tab can show the error. */
+    loadReviews: (favourites: readonly string[]) => track("Loading the PRs waiting for your review…", port.reviewRequests(favourites)),
+
+    /**
+     * A new session that summarises and reviews the PR at its head commit, with the open session's model and agent, in
+     * its folder. With the commit explained before, it asks about the changes since. True when the session started.
+     */
+    explain: (from: PanelSession, pr: ReviewRequest, previousSha?: string) =>
+      act(
+        () =>
+          track(
+            `Starting a review session for ${reviewId(pr)}…`,
+            (async () => {
+              const current = await port.session(from.id);
+              const id = await port.createSession({ title: `Review: ${reviewId(pr)} ${pr.title}`, directory: from.directory, model: current.model, agent: current.agent });
+              await port.prompt(id, explainPrompt(pr, previousSha));
+              port.openSession(from.server.id, id);
+            })(),
+          ),
+        "Could not start a review session",
+      ),
+
+    /** Sends the review on the commit the user had explained; a review GitHub would refuse is never sent. */
+    submitReview: async (pr: ReviewRequest, event: ReviewEvent, body: string) => {
+      const problem = reviewProblem(event, body);
+      if (problem) {
+        say(problem);
+        return false;
+      }
+      return act(
+        async () => say(await track(`Submitting the review of ${reviewId(pr)}…`, port.submitReview({ repo: pr.repo, number: pr.number, event, body, sha: pr.headSha }))),
+        `Could not submit the review of ${reviewId(pr)}`,
+      );
+    },
   };
 }
 
